@@ -7,6 +7,7 @@
 #include <termios.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <sys/ioctl.h>
 /*
     DOC
 
@@ -36,31 +37,44 @@
 
 
 */
+/*
+ **** Defines *****
+ */
+#define CTRL_KEYS(k) ((k)&0x1f)
+// TODO - Check why we are anding with 1f
 
 /*
  **** Data *****
  */
-struct termios original_termios;
+struct editorConfig{
+    int nScreenRows;
+    int nScreenColumns;
+    struct termios original_termios;
+};
+struct editorConfig E;
 /*
  **** Terminal *****
  */
 void die(const char *s)
 {
+    // clear screen before error exit
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    write(STDOUT_FILENO, "\x1b[H", 3);
     perror(s);
     exit(1);
 }
 void disableRawMode()
 {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_termios) == -1)
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.original_termios) == -1)
         die("tcsetattr");
 }
 void enableRawMode()
 {
 
-    if (tcgetattr(STDIN_FILENO, &original_termios) == -1)
+    if (tcgetattr(STDIN_FILENO, &E.original_termios) == -1)
         die("tcgetattr");
     atexit(disableRawMode); // is called at the exit of the executable not this function alone
-    struct termios raw = original_termios;
+    struct termios raw = E.original_termios;
     raw.c_iflag &= ~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
     // unset the fourth bit
     raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN); // turn off canonical and echo mode
@@ -72,27 +86,76 @@ void enableRawMode()
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
         die("tcsetattr");
 }
+char editorReadKey()
+{
+
+    int nRead;
+    char ch;
+    while ((nRead = read(STDIN_FILENO, &ch, 1)) != 1)
+    {
+        if (nRead == -1 && errno != EAGAIN)
+            die("read");
+    }
+    return ch;
+}
+int getWindowSize(int *rows,int *cols){
+    struct winsize ws;
+    
+    if(ioctl(STDOUT_FILENO,TIOCGWINSZ,&ws)==-1 || ws.ws_col==0)
+        return -1;
+    else{
+        *cols=ws.ws_col;
+        *rows=ws.ws_row;
+        return 0;
+    }
+    
+}
+/*
+    Input
+*/
+
+void editorProcessKeypress()
+{
+    char c = editorReadKey();
+    switch (c)
+    {
+    case CTRL_KEYS('q'):
+        write(STDOUT_FILENO, "\x1b[2J", 4);
+        write(STDOUT_FILENO, "\x1b[H", 3);
+        exit(0);
+        break;
+    }
+}
+/*
+    Outupt
+*/
+void editorDrawRows(){
+    int y;
+    for(y=0;y<E.nScreenRows;y++){
+        write(STDOUT_FILENO,"~\r\n",3);
+    }
+}
+void editorRefreshScreen(){
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    write(STDOUT_FILENO, "\x1b[H", 3);
+    editorDrawRows();
+    write(STDOUT_FILENO,"\x1b[H",3);
+}
+
 /*
  **** Init *****
  */
-
+void initEditor(){
+    if(getWindowSize(&E.nScreenRows,&E.nScreenColumns)==-1 ) die("getWindowSize");
+}
 int main()
 {
-    char c;
-    // we have a function to read and modify the terminal atributes
     enableRawMode();
+    initEditor();
     while (1)
     {
-        char c = '\0'; // set to null
-        if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN)
-            die("read");
-        if (iscntrl(c))
-            printf("%d\r\n", c);
-        else
-            printf("%d ('%c')\r\n", c, c);
-
-        if (c == 'q')
-            break;
+        editorRefreshScreen();
+        editorProcessKeypress();
     }
 
     return 0;
